@@ -1,4 +1,5 @@
-﻿using System;
+﻿using Microsoft.Win32;
+using System;
 using System.DirectoryServices.AccountManagement;
 using System.DirectoryServices.ActiveDirectory;
 
@@ -8,17 +9,15 @@ class Program
     {
         Console.Title = "AccountBlocker";
 
-        string domain;
-        try
+        var domain = LoadDomain();
+        if (domain == null)
         {
-            Console.WriteLine("Loading domain...");
-            domain = Domain.GetCurrentDomain().Name;
-            Console.WriteLine($"Associated with domain: \"{domain}\"\n");
+            return;
         }
-        catch (ActiveDirectoryOperationException)
+
+        var accountLockoutInformation = LoadAccountLockoutInformation();
+        if (accountLockoutInformation == null)
         {
-            Console.WriteLine("Error: Can't load domain!");
-            Console.ReadLine();
             return;
         }
 
@@ -27,65 +26,145 @@ class Program
             Console.WriteLine("Enter a username to block: ");
             var username = Console.ReadLine();
 
-            PrincipalContext context;
-            try
+            using (var context = LoadContext(domain))
             {
-                context = new PrincipalContext(ContextType.Domain, domain);
+                if (context == null)
+                {
+                    continue;
+                }
+
+                using (var principal = FindUser(context, username))
+                {
+                    if (principal == null)
+                    {
+                        continue;
+                    }
+
+                    BlockUser(context, principal, username, accountLockoutInformation);
+                }
             }
-            catch (PrincipalOperationException)
+        }
+    }
+
+    private static string LoadDomain()
+    {
+        Console.WriteLine("Loading domain...");
+        try
+        {
+            using (var domain = Domain.GetCurrentDomain())
             {
-                Console.WriteLine("Error: No network connection!");
-                continue;
+                Console.WriteLine($"Associated with domain: \"{domain.Name}\"\n");
+                return domain.Name;
+            }
+        }
+        catch (ActiveDirectoryOperationException)
+        {
+            Console.WriteLine("Error: Can't load domain!");
+            Console.Read();
+        }
+        return null;
+    }
+
+    private static Tuple<int, int> LoadAccountLockoutInformation()
+    {
+        int maxDenials, lockoutDurationMinutes;
+
+        try
+        {
+            using (var key = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Services\RemoteAccess\Parameters\AccountLockout"))
+            {
+                maxDenials = (int)key.GetValue("MaxDenials");
+                lockoutDurationMinutes = (int)key.GetValue("ResetTime (mins)");
+
+                key.Close();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("Unable to read registry!");
+            Console.WriteLine("({0}: {1})", ex.GetType(), ex.Message);
+            Console.Read();
+            return null;
+        }
+
+        if (maxDenials == 0)
+        {
+            Console.WriteLine("The system administrator has disabled account blocking after failing multiple authentication attempts!");
+            Console.WriteLine("Note that because of that, the network might be vulnerable to easy password cracking using brute force.");
+            Console.Read();
+            return null;
+        }
+
+        return new Tuple<int, int>(maxDenials, lockoutDurationMinutes);
+    }
+
+    private static PrincipalContext LoadContext(string domain)
+    {
+        try
+        {
+            return new PrincipalContext(ContextType.Domain, domain);
+        }
+        catch (PrincipalOperationException)
+        {
+            Console.WriteLine("Error: No network connection!");
+            return null;
+        }
+    }
+
+    private static UserPrincipal FindUser(PrincipalContext context, string username)
+    {
+        try
+        {
+            var principal = UserPrincipal.FindByIdentity(context, username);
+
+            if (principal != null)
+            {
+                return principal;
             }
 
-            UserPrincipal principal;
-            try
-            {
-                principal = UserPrincipal.FindByIdentity(context, username);   
-            }
-            catch (ArgumentException)
-            {
-                Console.WriteLine("Error: Bad username!");
-                continue;
-            }
-            catch (MultipleMatchesException)
-            {
-                Console.WriteLine("Error: Multiple users found!");
-                continue;
-            }
+            Console.WriteLine($"Error: Can't find user called \"{username}\"!");
+        }
+        catch (ArgumentException)
+        {
+            Console.WriteLine("Error: Bad username!");
+        }
+        catch (MultipleMatchesException)
+        {
+            Console.WriteLine("Error: Multiple users found!");
+        }
 
-            if (principal == null)
-            {
-                Console.WriteLine($"Error: Can't find user called \"{username}\"!");
-                continue;
-            }
+        return null;
+    }
 
-            if (principal.IsAccountLockedOut())
-            {
-                Console.WriteLine($"\"{username}\" is already blocked!");
-                continue;
-            }
+    private static bool BlockUser(PrincipalContext context, UserPrincipal principal, string username, Tuple<int, int> accountLockoutInformation)
+    {
+        var maxDenials = accountLockoutInformation.Item1;
+        var lockoutDurationMinutes = accountLockoutInformation.Item2;
 
-            /*
-                * Max value for failed authentication attempts is 999
-                */ 
-            for (int i = 0; i < 1000 && !principal.IsAccountLockedOut(); i++)
-            {
-                context.ValidateCredentials(username, string.Empty);
-            }
+        if (principal.IsAccountLockedOut())
+        {
+            Console.WriteLine($"\"{username}\" is already blocked!");
+            return false;
+        }
 
-            if (principal.IsAccountLockedOut())
-            {
-                Console.WriteLine($"\"{username}\" has been successfully blocked!\n");
-            }
-            else
-            {
-                Console.WriteLine($"\"{username}\" can't be blocked after 999 attempts!\n" + 
-                    "Probably the network doesn't support protection from brute-force password cracking,\n" +
-                    "and therefore doesn't block users when failing too many authentication attempts.");
-                Console.ReadLine();
-                return;
-            }
+        for (int i = 0; i < maxDenials && !principal.IsAccountLockedOut(); i++)
+        {
+            context.ValidateCredentials(username, string.Empty);
+        }
+
+        if (principal.IsAccountLockedOut())
+        {
+            var lockoutTimeString = lockoutDurationMinutes == 0 ?
+                "until an administrator unblocks him" :
+                $"for {lockoutDurationMinutes} minutes";
+
+            Console.WriteLine($"\"{username}\" has been successfully blocked {lockoutTimeString}!\n");
+            return true;
+        }
+        else
+        {
+            Console.WriteLine($"Error: \"{username}\" can't be blocked after {maxDenials} attempts!\n");
+            return false;
         }
     }
 }
