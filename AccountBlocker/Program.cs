@@ -104,7 +104,7 @@ class Program
             return;
         }
 
-        for (int i = 0; i < 1000 && !principal.IsAccountLockedOut(); i++)
+        for (int i = 0; i < 999 && !principal.IsAccountLockedOut(); i++)
         {
             context.ValidateCredentials(username, string.Empty);
         }
