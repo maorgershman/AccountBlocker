@@ -106,7 +106,7 @@ class Program
 
         for (int i = 0; i < 999 && !principal.IsAccountLockedOut(); i++)
         {
-            context.ValidateCredentials(username, string.Empty);
+            context.ValidateCredentials(username, string.Empty, ContextOptions.Negotiate);
         }
 
         if (principal.IsAccountLockedOut())
